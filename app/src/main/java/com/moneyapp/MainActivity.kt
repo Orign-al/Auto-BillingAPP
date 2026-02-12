@@ -1,7 +1,7 @@
 package com.moneyapp
 
-import android.os.Bundle
 import android.os.Build
+import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -28,6 +29,7 @@ import androidx.compose.material.icons.outlined.CloudDone
 import androidx.compose.material.icons.outlined.CloudOff
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Save
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -54,15 +56,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.core.content.PermissionChecker
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.moneyapp.data.SettingsRepository
 import com.moneyapp.data.SettingsState
+import com.moneyapp.db.AccountEntity
+import com.moneyapp.db.CategoryEntity
 import com.moneyapp.db.OcrRecord
 import com.moneyapp.monitor.ScreenshotMonitorService
 import com.moneyapp.repository.OcrRepository
@@ -95,6 +99,9 @@ private fun SettingsScreen(repository: SettingsRepository, ocrRepository: OcrRep
         initialValue = SettingsState("", "", "", "")
     )
     val records by ocrRepository.observeRecords().collectAsStateWithLifecycle(initialValue = emptyList())
+    val accounts by ocrRepository.observeAccounts().collectAsStateWithLifecycle(initialValue = emptyList())
+    val categories by ocrRepository.observeCategories().collectAsStateWithLifecycle(initialValue = emptyList())
+
     var editable by remember { mutableStateOf(settingsState) }
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -128,6 +135,8 @@ private fun SettingsScreen(repository: SettingsRepository, ocrRepository: OcrRep
     selectedRecord?.let { record ->
         EditRecordSheet(
             record = record,
+            accounts = accounts,
+            categories = categories,
             onDismiss = { selectedRecord = null },
             onSave = { updated ->
                 scope.launch {
@@ -155,7 +164,7 @@ private fun SettingsScreen(repository: SettingsRepository, ocrRepository: OcrRep
             TopAppBar(
                 title = {
                     Column {
-                        Text(text = "MoneyApp", fontWeight = FontWeight.SemiBold)
+                        Text(text = "Auto Billing", fontWeight = FontWeight.SemiBold)
                         Text(
                             text = if (settingsState.isConfigured) "Ready to sync" else "Setup required",
                             fontSize = 12.sp,
@@ -266,6 +275,20 @@ private fun SettingsScreen(repository: SettingsRepository, ocrRepository: OcrRep
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth()
                         )
+                        Button(
+                            onClick = {
+                                scope.launch {
+                                    val ok = ocrRepository.syncMetadata()
+                                    snackbarHostState.showSnackbar(
+                                        if (ok) "Metadata synced" else "Metadata sync failed"
+                                    )
+                                }
+                            },
+                            enabled = settingsState.isConfigured,
+                            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 10.dp)
+                        ) {
+                            Text(text = "Sync ezBookkeeping data")
+                        }
                     }
                 }
 
@@ -422,8 +445,8 @@ private fun RecordCard(record: OcrRecord, onEdit: () -> Unit) {
                     text = buildString {
                         val amount = record.amountMinor?.let { formatAmount(it) } ?: "--"
                         append(amount)
-                        record.categoryGuess?.let { append(" · ").append(it) }
-                        record.uploadStatus?.let { append(" · ").append(it) }
+                        record.categoryGuess?.let { append(" | ").append(it) }
+                        record.uploadStatus?.let { append(" | ").append(it) }
                     },
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 12.sp
@@ -445,6 +468,8 @@ private fun RecordCard(record: OcrRecord, onEdit: () -> Unit) {
 @Composable
 private fun EditRecordSheet(
     record: OcrRecord,
+    accounts: List<AccountEntity>,
+    categories: List<CategoryEntity>,
     onDismiss: () -> Unit,
     onSave: (OcrRecord) -> Unit,
     onUpload: (OcrRecord) -> Unit
@@ -495,12 +520,32 @@ private fun EditRecordSheet(
                 label = { Text("Account ID") },
                 modifier = Modifier.fillMaxWidth()
             )
+            if (accounts.isNotEmpty()) {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(accounts.take(6)) { account ->
+                        AssistChip(
+                            onClick = { accountId = account.id },
+                            label = { Text(account.name) }
+                        )
+                    }
+                }
+            }
             OutlinedTextField(
                 value = categoryId,
                 onValueChange = { categoryId = it },
                 label = { Text("Category ID") },
                 modifier = Modifier.fillMaxWidth()
             )
+            if (categories.isNotEmpty()) {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(categories.take(6)) { category ->
+                        AssistChip(
+                            onClick = { categoryId = category.id },
+                            label = { Text(category.name) }
+                        )
+                    }
+                }
+            }
             OutlinedTextField(
                 value = comment,
                 onValueChange = { comment = it },

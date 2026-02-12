@@ -2,8 +2,11 @@ package com.moneyapp.repository
 
 import android.content.Context
 import android.util.Log
+import androidx.room.withTransaction
 import com.moneyapp.data.SettingsRepository
+import com.moneyapp.db.AccountEntity
 import com.moneyapp.db.AppDatabase
+import com.moneyapp.db.CategoryEntity
 import com.moneyapp.db.OcrRecord
 import com.moneyapp.parser.ReceiptParser
 import kotlinx.coroutines.Dispatchers
@@ -14,8 +17,10 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.TimeZone
+
 class OcrRepository(context: Context) {
     private val db = AppDatabase.get(context)
     private val parser = ReceiptParser()
@@ -23,6 +28,8 @@ class OcrRepository(context: Context) {
     private val settingsRepository = SettingsRepository(context)
 
     fun observeRecords(): Flow<List<OcrRecord>> = db.ocrRecordDao().observeAll()
+    fun observeAccounts(): Flow<List<AccountEntity>> = db.accountDao().observeAll()
+    fun observeCategories(): Flow<List<CategoryEntity>> = db.categoryDao().observeAll()
 
     suspend fun addRecord(imageUri: String, displayName: String, rawText: String) {
         val parsed = parser.parse(rawText)
@@ -52,6 +59,33 @@ class OcrRepository(context: Context) {
 
     suspend fun updateRecord(record: OcrRecord) {
         db.ocrRecordDao().update(record)
+    }
+
+    suspend fun syncMetadata(): Boolean {
+        val settings = settingsRepository.settingsFlow.first()
+        if (settings.host.isBlank() || settings.token.isBlank()) {
+            Log.w(TAG, "Missing host or token")
+            return false
+        }
+
+        val base = settings.host.trimEnd('/')
+        val accountsJson = getJson("$base/api/v1/accounts/list.json", settings.token) ?: return false
+        val categoriesJson = getJson(
+            "$base/api/v1/transaction/categories/list.json",
+            settings.token
+        ) ?: return false
+
+        val accounts = parseAccounts(accountsJson)
+        val categories = parseCategories(categoriesJson)
+
+        db.withTransaction {
+            db.accountDao().clear()
+            db.accountDao().insertAll(accounts)
+            db.categoryDao().clear()
+            db.categoryDao().insertAll(categories)
+        }
+
+        return true
     }
 
     suspend fun uploadRecord(record: OcrRecord): Boolean {
@@ -84,6 +118,67 @@ class OcrRepository(context: Context) {
         return withContext(Dispatchers.IO) {
             http.newCall(request).execute().use { response ->
                 response.isSuccessful
+            }
+        }
+    }
+
+    private suspend fun getJson(url: String, token: String): JSONObject? {
+        val request = Request.Builder()
+            .url(url)
+            .addHeader("Authorization", "Bearer $token")
+            .build()
+
+        return withContext(Dispatchers.IO) {
+            http.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@use null
+                val body = response.body?.string() ?: return@use null
+                JSONObject(body)
+            }
+        }
+    }
+
+    private fun parseAccounts(json: JSONObject): List<AccountEntity> {
+        val result = json.optJSONArray("result") ?: JSONArray()
+        val list = mutableListOf<AccountEntity>()
+        for (i in 0 until result.length()) {
+            val obj = result.optJSONObject(i) ?: continue
+            val id = obj.optString("id")
+            val name = obj.optString("name")
+            val category = obj.optInt("category")
+            val parentId = obj.optString("parentId").ifBlank { null }
+            if (id.isNotBlank()) {
+                list.add(AccountEntity(id = id, name = name, category = category, parentId = parentId))
+            }
+        }
+        return list
+    }
+
+    private fun parseCategories(json: JSONObject): List<CategoryEntity> {
+        val result = json.optJSONObject("result") ?: JSONObject()
+        val list = mutableListOf<CategoryEntity>()
+        val keys = result.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            val array = result.optJSONArray(key) ?: continue
+            val typeFromKey = key.toIntOrNull() ?: 0
+            parseCategoryArray(array, typeFromKey, list)
+        }
+        return list
+    }
+
+    private fun parseCategoryArray(array: JSONArray, typeFallback: Int, list: MutableList<CategoryEntity>) {
+        for (i in 0 until array.length()) {
+            val obj = array.optJSONObject(i) ?: continue
+            val id = obj.optString("id")
+            val name = obj.optString("name")
+            val type = obj.optInt("type", typeFallback)
+            val parentId = obj.optString("parentId").ifBlank { null }
+            if (id.isNotBlank()) {
+                list.add(CategoryEntity(id = id, name = name, type = type, parentId = parentId))
+            }
+            val subs = obj.optJSONArray("subCategories")
+            if (subs != null) {
+                parseCategoryArray(subs, type, list)
             }
         }
     }
