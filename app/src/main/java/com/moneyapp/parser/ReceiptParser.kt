@@ -11,31 +11,19 @@ class ReceiptParser {
             .replace("\u00A0", " ")
             .replace("：", ":")
         val lines = normalized.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        val template = detectTemplate(normalized, lines)
 
         val amount = extractAmount(normalized, lines)
         val time = extractTime(normalized)
-        val merchant = extractByLabels(
-            lines,
-            listOf(
-                "收款方", "商家", "对方", "付款给", "收款单位", "商户名称",
-                "商户", "对方账户", "收款方全称"
-            )
-        ) ?: extractMerchantFallback(lines)
-        val payMethod = extractByLabels(
-            lines,
-            listOf("支付方式", "付款方式", "银行卡", "信用卡", "支付工具", "支付渠道", "付款账户")
-        )
+        val merchant = extractByLabels(lines, merchantLabels(template))
+            ?: extractMerchantNearAmount(lines)
+            ?: extractMerchantFallback(lines)
+        val payMethod = extractByLabels(lines, payMethodLabels(template))
         val cardTail = extractCardTail(normalized) ?: extractCardTail(payMethod ?: "")
         val platform = extractPlatform(normalized)
         val status = extractStatus(normalized)
-        val orderId = extractByLabels(
-            lines,
-            listOf("订单号", "交易号", "商户单号", "交易订单号", "交易单号", "商户订单号")
-        ) ?: extractOrderId(normalized)
-        val itemName = extractByLabels(
-            lines,
-            listOf("商品", "商品名称", "服务", "商品说明", "商品详情", "商品描述")
-        )
+        val orderId = extractByLabels(lines, orderIdLabels(template)) ?: extractOrderId(normalized)
+        val itemName = extractByLabels(lines, itemLabels(template))
         val categoryGuess = guessCategory(normalized)
 
         return ParsedReceipt(
@@ -160,8 +148,9 @@ class ReceiptParser {
 
     private fun extractStatus(text: String): String? {
         return when {
-            text.contains("退款") -> "Refund"
+            text.contains("退款") || text.contains("退款成功") -> "Refund"
             text.contains("支付成功") || text.contains("交易成功") -> "Success"
+            text.contains("交易失败") || text.contains("支付失败") -> "Failed"
             else -> null
         }
     }
@@ -244,6 +233,63 @@ class ReceiptParser {
 
     private fun looksLikeId(value: String): Boolean {
         return value.length >= 8 && !value.contains(".")
+    }
+
+    private fun detectTemplate(text: String, lines: List<String>): Template {
+        if (text.contains("账单详情") || text.contains("支付宝")) return Template.ALIPAY
+        if (text.contains("收单机构") || text.contains("商户全称") || lines.any { it.contains("支付成功") }) {
+            return Template.WECHAT
+        }
+        return Template.GENERIC
+    }
+
+    private fun merchantLabels(template: Template): List<String> {
+        return when (template) {
+            Template.WECHAT -> listOf("商户全称", "商户名称", "商户", "收款方", "对方")
+            Template.ALIPAY -> listOf("收款方全称", "收款方", "商户名称", "商户")
+            Template.GENERIC -> listOf("收款方", "商家", "对方", "付款给", "收款单位", "商户名称", "商户", "对方账户")
+        }
+    }
+
+    private fun payMethodLabels(template: Template): List<String> {
+        return when (template) {
+            Template.WECHAT -> listOf("支付方式", "银行卡", "信用卡", "支付工具")
+            Template.ALIPAY -> listOf("付款方式", "支付方式", "付款账户", "银行卡", "信用卡")
+            Template.GENERIC -> listOf("支付方式", "付款方式", "银行卡", "信用卡", "支付工具", "支付渠道", "付款账户")
+        }
+    }
+
+    private fun orderIdLabels(template: Template): List<String> {
+        return when (template) {
+            Template.WECHAT -> listOf("交易单号", "商户单号", "交易号", "订单号")
+            Template.ALIPAY -> listOf("交易号", "订单号", "商户订单号", "交易单号")
+            Template.GENERIC -> listOf("订单号", "交易号", "商户单号", "交易订单号", "交易单号", "商户订单号")
+        }
+    }
+
+    private fun itemLabels(template: Template): List<String> {
+        return when (template) {
+            Template.WECHAT -> listOf("商品", "商品名称")
+            Template.ALIPAY -> listOf("商品说明", "商品", "商品名称", "商品描述")
+            Template.GENERIC -> listOf("商品", "商品名称", "服务", "商品说明", "商品详情", "商品描述")
+        }
+    }
+
+    private fun extractMerchantNearAmount(lines: List<String>): String? {
+        val amountIndex = lines.indexOfFirst { line ->
+            line.matches(Regex("^-?[0-9]+(\\.[0-9]{1,2})?$"))
+        }
+        if (amountIndex > 0) {
+            val candidate = lines.subList(0, amountIndex).lastOrNull { it.length in 2..30 }
+            if (!candidate.isNullOrBlank()) return candidate
+        }
+        return null
+    }
+
+    private enum class Template {
+        WECHAT,
+        ALIPAY,
+        GENERIC
     }
 
     data class ParsedReceipt(

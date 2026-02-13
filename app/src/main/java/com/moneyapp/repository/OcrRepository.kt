@@ -115,7 +115,17 @@ class OcrRepository(context: Context) {
         val timezoneOffset = TimeZone.getDefault().rawOffset / 60000
         val resolvedTagId = record.tagId ?: resolveTagId(record.platform)
         val normalizedAmount = abs(record.amountMinor ?: 0)
-        val transactionType = if (record.status == "Refund") 2 else 3
+        val isRefund = record.status == "Refund"
+        val rawText = record.rawText
+        val hasIncomeHint = listOf("收款", "收入").any { hint ->
+            (record.comment ?: "").contains(hint) || rawText.contains(hint)
+        }
+        val transactionType = when {
+            isRefund -> 2
+            (record.amountMinor ?: 0) > 0 -> 2
+            hasIncomeHint -> 2
+            else -> 3
+        }
         val payload = JSONObject().apply {
             put("type", transactionType)
             put("categoryId", record.categoryId ?: settings.defaultCategoryId)
