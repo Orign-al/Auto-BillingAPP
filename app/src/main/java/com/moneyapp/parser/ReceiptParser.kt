@@ -7,21 +7,35 @@ import java.util.regex.Pattern
 
 class ReceiptParser {
     fun parse(text: String): ParsedReceipt {
-        val normalized = text.replace("\u00A0", " ")
+        val normalized = text
+            .replace("\u00A0", " ")
+            .replace("：", ":")
         val lines = normalized.lines().map { it.trim() }.filter { it.isNotEmpty() }
 
         val amount = extractAmount(normalized)
         val time = extractTime(normalized)
         val merchant = extractByLabels(
             lines,
-            listOf("收款方", "商家", "对方", "付款给", "收款单位", "商户名称", "商户", "对方账户")
+            listOf(
+                "收款方", "商家", "对方", "付款给", "收款单位", "商户名称",
+                "商户", "对方账户", "收款方全称"
+            )
         ) ?: extractMerchantFallback(lines)
-        val payMethod = extractByLabels(lines, listOf("支付方式", "付款方式", "银行卡", "信用卡", "支付工具"))
+        val payMethod = extractByLabels(
+            lines,
+            listOf("支付方式", "付款方式", "银行卡", "信用卡", "支付工具", "支付渠道", "付款账户")
+        )
         val cardTail = extractCardTail(normalized)
         val platform = extractPlatform(normalized)
         val status = extractStatus(normalized)
-        val orderId = extractByLabels(lines, listOf("订单号", "交易号", "商户单号", "交易订单号"))
-        val itemName = extractByLabels(lines, listOf("商品", "商品名称", "服务", "商品说明", "商品详情"))
+        val orderId = extractByLabels(
+            lines,
+            listOf("订单号", "交易号", "商户单号", "交易订单号", "交易单号", "商户订单号")
+        ) ?: extractOrderId(normalized)
+        val itemName = extractByLabels(
+            lines,
+            listOf("商品", "商品名称", "服务", "商品说明", "商品详情", "商品描述")
+        )
         val categoryGuess = guessCategory(normalized)
 
         return ParsedReceipt(
@@ -40,19 +54,31 @@ class ReceiptParser {
     }
 
     private fun extractAmount(text: String): MoneyAmount? {
-        val keywordRegex = Pattern.compile("(实付|付款金额|合计|支付金额|总计|应付|实付款|消费金额)[^0-9]{0,6}([0-9]+(?:\\.[0-9]{1,2})?)")
+        val keywordRegex = Pattern.compile(
+            "(实付|付款金额|合计|支付金额|总计|应付|实付款|消费金额|支付合计|Paid|Total|Amount)[^0-9]{0,6}([0-9]+(?:\\.[0-9]{1,2})?)",
+            Pattern.CASE_INSENSITIVE
+        )
         val keywordMatch = keywordRegex.matcher(text)
         if (keywordMatch.find()) {
-            return toMoney(keywordMatch.group(2))
+            return toMoney(keywordMatch.group(2), text)
+        }
+
+        val currencyRegex = Pattern.compile("([¥￥$]|USD|CNY|RMB|HKD)\\s*([0-9]+(?:\\.[0-9]{1,2})?)", Pattern.CASE_INSENSITIVE)
+        val currencyMatch = currencyRegex.matcher(text)
+        if (currencyMatch.find()) {
+            return toMoney(currencyMatch.group(2), currencyMatch.group(1))
         }
 
         val fallbackRegex = Pattern.compile("([0-9]+(?:\\.[0-9]{1,2})?)")
         val matches = mutableListOf<String>()
         val matcher = fallbackRegex.matcher(text)
         while (matcher.find()) {
-            matches.add(matcher.group(1))
+            val value = matcher.group(1)
+            if (!looksLikeId(value)) {
+                matches.add(value)
+            }
         }
-        return matches.maxByOrNull { it.toDoubleOrNull() ?: 0.0 }?.let { toMoney(it) }
+        return matches.maxByOrNull { it.toDoubleOrNull() ?: 0.0 }?.let { toMoney(it, text) }
     }
 
     private fun extractTime(text: String): Long? {
@@ -61,7 +87,11 @@ class ReceiptParser {
             "yyyy/MM/dd HH:mm",
             "yyyy.MM.dd HH:mm",
             "yyyy-MM-dd HH:mm:ss",
-            "yyyy/MM/dd HH:mm:ss"
+            "yyyy/MM/dd HH:mm:ss",
+            "yyyy年MM月dd日 HH:mm",
+            "yyyy年MM月dd日 HH:mm:ss",
+            "MM-dd HH:mm",
+            "MM/dd HH:mm"
         )
 
         for (pattern in patterns) {
@@ -89,9 +119,11 @@ class ReceiptParser {
     }
 
     private fun extractMerchantFallback(lines: List<String>): String? {
-        val skipKeywords = listOf("支付", "金额", "订单", "时间", "收款方", "商家", "对方")
+        val skipKeywords = listOf("支付", "金额", "订单", "时间", "收款方", "商家", "对方", "交易", "成功")
         return lines.firstOrNull { line ->
-            line.length in 2..20 && skipKeywords.none { line.contains(it) }
+            line.length in 2..20 &&
+                skipKeywords.none { line.contains(it) } &&
+                !line.any { it.isDigit() }
         }
     }
 
@@ -117,6 +149,12 @@ class ReceiptParser {
         }
     }
 
+    private fun extractOrderId(text: String): String? {
+        val regex = Pattern.compile("(订单号|交易号|商户单号)[:\\s]*([A-Za-z0-9\\-]{8,})")
+        val matcher = regex.matcher(text)
+        return if (matcher.find()) matcher.group(2) else null
+    }
+
     private fun guessCategory(text: String): String? {
         val map = mapOf(
             "餐" to "餐饮",
@@ -137,17 +175,30 @@ class ReceiptParser {
         return map.entries.firstOrNull { text.contains(it.key) }?.value
     }
 
-    private fun toMoney(value: String?): MoneyAmount? {
+    private fun toMoney(value: String?, context: String): MoneyAmount? {
         val amount = value?.toDoubleOrNull() ?: return null
         val minor = (amount * 100).toLong()
-        return MoneyAmount(minor, "CNY")
+        return MoneyAmount(minor, detectCurrency(context))
+    }
+
+    private fun toMoney(value: String?, currencyHint: String?): MoneyAmount? {
+        val amount = value?.toDoubleOrNull() ?: return null
+        val minor = (amount * 100).toLong()
+        val currency = detectCurrency(currencyHint ?: "")
+        return MoneyAmount(minor, currency)
     }
 
     private fun parseToEpochSeconds(value: String, pattern: String): Long? {
         return try {
-            val formatter = SimpleDateFormat(pattern, Locale.getDefault())
+            val (finalValue, finalPattern) = if (!pattern.contains("yyyy")) {
+                val year = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
+                "$year-$value" to "yyyy-$pattern"
+            } else {
+                value to pattern
+            }
+            val formatter = SimpleDateFormat(finalPattern, Locale.getDefault())
             formatter.timeZone = TimeZone.getDefault()
-            val date = formatter.parse(value) ?: return null
+            val date = formatter.parse(finalValue) ?: return null
             date.time / 1000
         } catch (ex: Exception) {
             null
@@ -162,6 +213,20 @@ class ReceiptParser {
             .replace("HH", "\\d{2}")
             .replace("mm", "\\d{2}")
             .replace("ss", "\\d{2}")
+    }
+
+    private fun detectCurrency(text: String): String {
+        val lower = text.lowercase(Locale.getDefault())
+        return when {
+            lower.contains("usd") || text.contains("$") -> "USD"
+            lower.contains("hkd") || text.contains("hk$") -> "HKD"
+            lower.contains("cny") || lower.contains("rmb") || text.contains("¥") || text.contains("￥") -> "CNY"
+            else -> "CNY"
+        }
+    }
+
+    private fun looksLikeId(value: String): Boolean {
+        return value.length >= 8 && !value.contains(".")
     }
 
     data class ParsedReceipt(
