@@ -3,6 +3,12 @@ package com.moneyapp.repository
 import android.content.Context
 import android.util.Log
 import androidx.room.withTransaction
+import androidx.work.BackoffPolicy
+import androidx.work.Constraints
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import java.util.concurrent.TimeUnit
 import com.moneyapp.data.SettingsRepository
 import com.moneyapp.db.AccountEntity
 import com.moneyapp.db.AppDatabase
@@ -10,6 +16,7 @@ import com.moneyapp.db.CategoryEntity
 import com.moneyapp.db.OcrRecord
 import com.moneyapp.db.TagEntity
 import com.moneyapp.parser.ReceiptParser
+import com.moneyapp.worker.UploadRetryWorker
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -23,10 +30,11 @@ import org.json.JSONObject
 import java.util.TimeZone
 
 class OcrRepository(context: Context) {
-    private val db = AppDatabase.get(context)
+    private val appContext = context.applicationContext
+    private val db = AppDatabase.get(appContext)
     private val parser = ReceiptParser()
     private val http = OkHttpClient()
-    private val settingsRepository = SettingsRepository(context)
+    private val settingsRepository = SettingsRepository(appContext)
 
     fun observeRecords(): Flow<List<OcrRecord>> = db.ocrRecordDao().observeAll()
     fun observeAccounts(): Flow<List<AccountEntity>> = db.accountDao().observeAll()
@@ -128,6 +136,17 @@ class OcrRepository(context: Context) {
                 response.isSuccessful
             }
         }
+    }
+
+    fun enqueueRetryUpload() {
+        val constraints = Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .build()
+        val request = OneTimeWorkRequestBuilder<UploadRetryWorker>()
+            .setConstraints(constraints)
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
+            .build()
+        WorkManager.getInstance(appContext).enqueue(request)
     }
 
     private suspend fun getJson(url: String, token: String): JSONObject? {

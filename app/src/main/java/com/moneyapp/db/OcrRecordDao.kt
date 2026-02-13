@@ -20,4 +20,7 @@ interface OcrRecordDao {
 
     @Query("SELECT * FROM ocr_records WHERE id = :id")
     suspend fun getById(id: Long): OcrRecord?
+
+    @Query("SELECT * FROM ocr_records WHERE uploadStatus IN ('draft', 'failed') ORDER BY createdAt DESC LIMIT :limit")
+    suspend fun getPending(limit: Int): List<OcrRecord>
 }

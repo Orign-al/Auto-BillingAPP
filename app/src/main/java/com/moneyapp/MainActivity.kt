@@ -56,6 +56,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -72,6 +73,7 @@ import com.moneyapp.db.TagEntity
 import com.moneyapp.monitor.ScreenshotMonitorService
 import com.moneyapp.repository.OcrRepository
 import com.moneyapp.ui.theme.MoneyAppTheme
+import coil.compose.AsyncImage
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -162,6 +164,9 @@ private fun SettingsScreen(repository: SettingsRepository, ocrRepository: OcrRep
                     snackbarHostState.showSnackbar(
                         if (success) "Uploaded to ezBookkeeping" else "Upload failed"
                     )
+                    if (!success) {
+                        ocrRepository.enqueueRetryUpload()
+                    }
                     selectedRecord = null
                 }
             }
@@ -347,6 +352,18 @@ private fun SettingsScreen(repository: SettingsRepository, ocrRepository: OcrRep
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             fontSize = 12.sp
                         )
+                        Button(
+                            onClick = {
+                                ocrRepository.enqueueRetryUpload()
+                                scope.launch {
+                                    snackbarHostState.showSnackbar("Retry queued")
+                                }
+                            },
+                            enabled = settingsState.isConfigured,
+                            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 10.dp)
+                        ) {
+                            Text(text = "Retry failed uploads")
+                        }
                     }
                 }
 
@@ -488,6 +505,15 @@ private fun RecordCard(record: OcrRecord, onEdit: () -> Unit) {
                 .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            AsyncImage(
+                model = record.imageUri,
+                contentDescription = null,
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(RoundedCornerShape(12.dp)),
+                contentScale = ContentScale.Crop
+            )
+            Spacer(modifier = Modifier.width(10.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = record.merchant ?: record.displayName,
