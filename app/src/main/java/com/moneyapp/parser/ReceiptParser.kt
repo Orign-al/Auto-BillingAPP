@@ -12,13 +12,16 @@ class ReceiptParser {
 
         val amount = extractAmount(normalized)
         val time = extractTime(normalized)
-        val merchant = extractByLabels(lines, listOf("收款方", "商家", "对方", "付款给", "收款单位"))
-        val payMethod = extractByLabels(lines, listOf("支付方式", "付款方式", "银行卡", "信用卡"))
+        val merchant = extractByLabels(
+            lines,
+            listOf("收款方", "商家", "对方", "付款给", "收款单位", "商户名称", "商户", "对方账户")
+        ) ?: extractMerchantFallback(lines)
+        val payMethod = extractByLabels(lines, listOf("支付方式", "付款方式", "银行卡", "信用卡", "支付工具"))
         val cardTail = extractCardTail(normalized)
         val platform = extractPlatform(normalized)
         val status = extractStatus(normalized)
-        val orderId = extractByLabels(lines, listOf("订单号", "交易号", "商户单号"))
-        val itemName = extractByLabels(lines, listOf("商品", "商品名称", "服务", "商品说明"))
+        val orderId = extractByLabels(lines, listOf("订单号", "交易号", "商户单号", "交易订单号"))
+        val itemName = extractByLabels(lines, listOf("商品", "商品名称", "服务", "商品说明", "商品详情"))
         val categoryGuess = guessCategory(normalized)
 
         return ParsedReceipt(
@@ -37,7 +40,7 @@ class ReceiptParser {
     }
 
     private fun extractAmount(text: String): MoneyAmount? {
-        val keywordRegex = Pattern.compile("(实付|付款金额|合计|支付金额|总计|应付)[^0-9]{0,6}([0-9]+(?:\\.[0-9]{1,2})?)")
+        val keywordRegex = Pattern.compile("(实付|付款金额|合计|支付金额|总计|应付|实付款|消费金额)[^0-9]{0,6}([0-9]+(?:\\.[0-9]{1,2})?)")
         val keywordMatch = keywordRegex.matcher(text)
         if (keywordMatch.find()) {
             return toMoney(keywordMatch.group(2))
@@ -83,6 +86,13 @@ class ReceiptParser {
             }
         }
         return null
+    }
+
+    private fun extractMerchantFallback(lines: List<String>): String? {
+        val skipKeywords = listOf("支付", "金额", "订单", "时间", "收款方", "商家", "对方")
+        return lines.firstOrNull { line ->
+            line.length in 2..20 && skipKeywords.none { line.contains(it) }
+        }
     }
 
     private fun extractCardTail(text: String): String? {

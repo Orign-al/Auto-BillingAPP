@@ -23,6 +23,7 @@ data class OcrRecord(
     val itemName: String?,
     val accountId: String?,
     val categoryId: String?,
+    val tagId: String?,
     val comment: String?,
     val uploadStatus: String?
 )

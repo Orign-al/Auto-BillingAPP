@@ -68,6 +68,7 @@ import com.moneyapp.data.SettingsState
 import com.moneyapp.db.AccountEntity
 import com.moneyapp.db.CategoryEntity
 import com.moneyapp.db.OcrRecord
+import com.moneyapp.db.TagEntity
 import com.moneyapp.monitor.ScreenshotMonitorService
 import com.moneyapp.repository.OcrRepository
 import com.moneyapp.ui.theme.MoneyAppTheme
@@ -101,6 +102,7 @@ private fun SettingsScreen(repository: SettingsRepository, ocrRepository: OcrRep
     val records by ocrRepository.observeRecords().collectAsStateWithLifecycle(initialValue = emptyList())
     val accounts by ocrRepository.observeAccounts().collectAsStateWithLifecycle(initialValue = emptyList())
     val categories by ocrRepository.observeCategories().collectAsStateWithLifecycle(initialValue = emptyList())
+    val tags by ocrRepository.observeTags().collectAsStateWithLifecycle(initialValue = emptyList())
 
     var editable by remember { mutableStateOf(settingsState) }
     val snackbarHostState = remember { SnackbarHostState() }
@@ -109,6 +111,8 @@ private fun SettingsScreen(repository: SettingsRepository, ocrRepository: OcrRep
     var isMonitoring by remember { mutableStateOf(false) }
     var permissionWarning by remember { mutableStateOf("") }
     var selectedRecord by remember { mutableStateOf<OcrRecord?>(null) }
+    var searchQuery by remember { mutableStateOf("") }
+    var statusFilter by remember { mutableStateOf(StatusFilter.All) }
 
     val permissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -131,12 +135,17 @@ private fun SettingsScreen(repository: SettingsRepository, ocrRepository: OcrRep
         targetValue = if (settingsState.isConfigured) Color(0xFF0F766E) else Color(0xFFB42318),
         label = "statusColor"
     )
+    val filteredRecords = records.filter { record ->
+        matchesStatus(record, statusFilter) && matchesQuery(record, searchQuery)
+    }
+    val stats = remember(records) { buildStats(records) }
 
     selectedRecord?.let { record ->
         EditRecordSheet(
             record = record,
             accounts = accounts,
             categories = categories,
+            tags = tags,
             onDismiss = { selectedRecord = null },
             onSave = { updated ->
                 scope.launch {
@@ -332,20 +341,63 @@ private fun SettingsScreen(repository: SettingsRepository, ocrRepository: OcrRep
                             .padding(20.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
+                        SectionTitle(title = "Insights")
+                        Text(
+                            text = "Total ${stats.total} · Draft ${stats.draft} · Uploaded ${stats.uploaded} · Failed ${stats.failed}",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 12.sp
+                        )
+                    }
+                }
+
+                Card(
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(20.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
                         SectionTitle(title = "Recent OCR")
-                        if (records.isEmpty()) {
-                            Text(
-                                text = "No OCR records yet. Take a screenshot to start.",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                fontSize = 12.sp
-                            )
-                        } else {
-                            LazyColumn(
-                                modifier = Modifier.height(260.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                items(records) { record ->
-                                    RecordCard(record = record, onEdit = { selectedRecord = record })
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            label = { Text("Search merchant or text") },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(StatusFilter.values()) { filter ->
+                                AssistChip(
+                                    onClick = { statusFilter = filter },
+                                    label = { Text(filter.label) }
+                                )
+                            }
+                        }
+                        when {
+                            records.isEmpty() -> {
+                                Text(
+                                    text = "No OCR records yet. Take a screenshot to start.",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontSize = 12.sp
+                                )
+                            }
+                            filteredRecords.isEmpty() -> {
+                                Text(
+                                    text = "No records match current filters.",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontSize = 12.sp
+                                )
+                            }
+                            else -> {
+                                LazyColumn(
+                                    modifier = Modifier.height(260.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    items(filteredRecords) { record ->
+                                        RecordCard(record = record, onEdit = { selectedRecord = record })
+                                    }
                                 }
                             }
                         }
@@ -470,6 +522,7 @@ private fun EditRecordSheet(
     record: OcrRecord,
     accounts: List<AccountEntity>,
     categories: List<CategoryEntity>,
+    tags: List<TagEntity>,
     onDismiss: () -> Unit,
     onSave: (OcrRecord) -> Unit,
     onUpload: (OcrRecord) -> Unit
@@ -480,6 +533,7 @@ private fun EditRecordSheet(
     var payTime by remember(record) { mutableStateOf(record.payTime?.let { formatTime(it) }.orEmpty()) }
     var accountId by remember(record) { mutableStateOf(record.accountId.orEmpty()) }
     var categoryId by remember(record) { mutableStateOf(record.categoryId.orEmpty()) }
+    var tagId by remember(record) { mutableStateOf(record.tagId.orEmpty()) }
     var comment by remember(record) { mutableStateOf(record.comment.orEmpty()) }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -547,6 +601,22 @@ private fun EditRecordSheet(
                 }
             }
             OutlinedTextField(
+                value = tagId,
+                onValueChange = { tagId = it },
+                label = { Text("Tag ID") },
+                modifier = Modifier.fillMaxWidth()
+            )
+            if (tags.isNotEmpty()) {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(tags.take(6)) { tag ->
+                        AssistChip(
+                            onClick = { tagId = tag.id },
+                            label = { Text(tag.name) }
+                        )
+                    }
+                }
+            }
+            OutlinedTextField(
                 value = comment,
                 onValueChange = { comment = it },
                 label = { Text("Comment") },
@@ -566,6 +636,7 @@ private fun EditRecordSheet(
                                 payTime = parseTime(payTime),
                                 accountId = accountId.ifBlank { null },
                                 categoryId = categoryId.ifBlank { null },
+                                tagId = tagId.ifBlank { null },
                                 comment = comment.ifBlank { null }
                             )
                         )
@@ -584,6 +655,7 @@ private fun EditRecordSheet(
                                 payTime = parseTime(payTime),
                                 accountId = accountId.ifBlank { null },
                                 categoryId = categoryId.ifBlank { null },
+                                tagId = tagId.ifBlank { null },
                                 comment = comment.ifBlank { null }
                             )
                         )
@@ -648,4 +720,47 @@ private fun parseTime(value: String): Long? {
     } catch (ex: Exception) {
         null
     }
+}
+
+private fun matchesQuery(record: OcrRecord, query: String): Boolean {
+    if (query.isBlank()) return true
+    val q = query.trim().lowercase(Locale.getDefault())
+    return listOfNotNull(
+        record.merchant,
+        record.displayName,
+        record.rawText,
+        record.itemName
+    ).any { it.lowercase(Locale.getDefault()).contains(q) }
+}
+
+private fun matchesStatus(record: OcrRecord, filter: StatusFilter): Boolean {
+    val status = record.uploadStatus ?: "draft"
+    return when (filter) {
+        StatusFilter.All -> true
+        StatusFilter.Draft -> status == "draft"
+        StatusFilter.Uploaded -> status == "uploaded"
+        StatusFilter.Failed -> status == "failed"
+    }
+}
+
+private fun buildStats(records: List<OcrRecord>): StatusStats {
+    val total = records.size
+    val uploaded = records.count { it.uploadStatus == "uploaded" }
+    val failed = records.count { it.uploadStatus == "failed" }
+    val draft = total - uploaded - failed
+    return StatusStats(total = total, draft = draft, uploaded = uploaded, failed = failed)
+}
+
+private data class StatusStats(
+    val total: Int,
+    val draft: Int,
+    val uploaded: Int,
+    val failed: Int
+)
+
+private enum class StatusFilter(val label: String) {
+    All("All"),
+    Draft("Draft"),
+    Uploaded("Uploaded"),
+    Failed("Failed")
 }

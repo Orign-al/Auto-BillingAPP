@@ -5,11 +5,12 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 
-@Database(entities = [OcrRecord::class, AccountEntity::class, CategoryEntity::class], version = 2)
+@Database(entities = [OcrRecord::class, AccountEntity::class, CategoryEntity::class, TagEntity::class], version = 3)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun ocrRecordDao(): OcrRecordDao
     abstract fun accountDao(): AccountDao
     abstract fun categoryDao(): CategoryDao
+    abstract fun tagDao(): TagDao
 
     companion object {
         @Volatile

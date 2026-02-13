@@ -8,6 +8,7 @@ import com.moneyapp.db.AccountEntity
 import com.moneyapp.db.AppDatabase
 import com.moneyapp.db.CategoryEntity
 import com.moneyapp.db.OcrRecord
+import com.moneyapp.db.TagEntity
 import com.moneyapp.parser.ReceiptParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -30,6 +31,7 @@ class OcrRepository(context: Context) {
     fun observeRecords(): Flow<List<OcrRecord>> = db.ocrRecordDao().observeAll()
     fun observeAccounts(): Flow<List<AccountEntity>> = db.accountDao().observeAll()
     fun observeCategories(): Flow<List<CategoryEntity>> = db.categoryDao().observeAll()
+    fun observeTags(): Flow<List<TagEntity>> = db.tagDao().observeAll()
 
     suspend fun addRecord(imageUri: String, displayName: String, rawText: String) {
         val parsed = parser.parse(rawText)
@@ -51,6 +53,7 @@ class OcrRepository(context: Context) {
             itemName = parsed.itemName,
             accountId = null,
             categoryId = null,
+            tagId = null,
             comment = null,
             uploadStatus = "draft"
         )
@@ -70,19 +73,22 @@ class OcrRepository(context: Context) {
 
         val base = settings.host.trimEnd('/')
         val accountsJson = getJson("$base/api/v1/accounts/list.json", settings.token) ?: return false
-        val categoriesJson = getJson(
-            "$base/api/v1/transaction/categories/list.json",
-            settings.token
-        ) ?: return false
+        val categoriesJson = getJson("$base/api/v1/transaction/categories/list.json", settings.token)
+            ?: return false
+        val tagsJson = getJson("$base/api/v1/transaction/tags/list.json", settings.token)
+            ?: return false
 
         val accounts = parseAccounts(accountsJson)
         val categories = parseCategories(categoriesJson)
+        val tags = parseTags(tagsJson)
 
         db.withTransaction {
             db.accountDao().clear()
             db.accountDao().insertAll(accounts)
             db.categoryDao().clear()
             db.categoryDao().insertAll(categories)
+            db.tagDao().clear()
+            db.tagDao().insertAll(tags)
         }
 
         return true
@@ -98,6 +104,7 @@ class OcrRepository(context: Context) {
 
         val url = settings.host.trimEnd('/') + "/api/v1/transactions/add.json"
         val timezoneOffset = TimeZone.getDefault().rawOffset / 60000
+        val resolvedTagId = record.tagId ?: resolveTagId(record.platform)
         val payload = JSONObject().apply {
             put("type", 3)
             put("categoryId", record.categoryId ?: settings.defaultCategoryId)
@@ -106,6 +113,7 @@ class OcrRepository(context: Context) {
             put("sourceAccountId", record.accountId ?: settings.defaultAccountId)
             put("sourceAmount", record.amountMinor ?: 0)
             put("comment", record.comment ?: record.merchant ?: "")
+            resolvedTagId?.let { put("tagIds", JSONArray(listOf(it))) }
         }
 
         val request = Request.Builder()
@@ -164,6 +172,34 @@ class OcrRepository(context: Context) {
             parseCategoryArray(array, typeFromKey, list)
         }
         return list
+    }
+
+    private fun parseTags(json: JSONObject): List<TagEntity> {
+        val result = json.optJSONArray("result") ?: JSONArray()
+        val list = mutableListOf<TagEntity>()
+        for (i in 0 until result.length()) {
+            val obj = result.optJSONObject(i) ?: continue
+            val id = obj.optString("id")
+            val name = obj.optString("name")
+            val groupId = obj.optString("groupId").ifBlank { null }
+            if (id.isNotBlank()) {
+                list.add(TagEntity(id = id, name = name, groupId = groupId))
+            }
+        }
+        return list
+    }
+
+    private suspend fun resolveTagId(platform: String?): String? {
+        val name = when (platform?.lowercase()) {
+            "wechat" -> listOf("微信支付", "微信", "WeChat Pay", "WeChat")
+            "alipay" -> listOf("支付宝", "Alipay")
+            else -> emptyList()
+        }
+        for (candidate in name) {
+            val tag = db.tagDao().findByName(candidate)
+            if (tag != null) return tag.id
+        }
+        return null
     }
 
     private fun parseCategoryArray(array: JSONArray, typeFallback: Int, list: MutableList<CategoryEntity>) {
