@@ -28,6 +28,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.TimeZone
+import kotlin.math.abs
 
 class OcrRepository(context: Context) {
     private val appContext = context.applicationContext
@@ -113,13 +114,15 @@ class OcrRepository(context: Context) {
         val url = settings.host.trimEnd('/') + "/api/v1/transactions/add.json"
         val timezoneOffset = TimeZone.getDefault().rawOffset / 60000
         val resolvedTagId = record.tagId ?: resolveTagId(record.platform)
+        val normalizedAmount = abs(record.amountMinor ?: 0)
+        val transactionType = if (record.status == "Refund") 2 else 3
         val payload = JSONObject().apply {
-            put("type", 3)
+            put("type", transactionType)
             put("categoryId", record.categoryId ?: settings.defaultCategoryId)
             put("time", record.payTime ?: System.currentTimeMillis() / 1000)
             put("utcOffset", timezoneOffset)
             put("sourceAccountId", record.accountId ?: settings.defaultAccountId)
-            put("sourceAmount", record.amountMinor ?: 0)
+            put("sourceAmount", normalizedAmount)
             put("comment", record.comment ?: record.merchant ?: "")
             resolvedTagId?.let { put("tagIds", JSONArray(listOf(it))) }
         }

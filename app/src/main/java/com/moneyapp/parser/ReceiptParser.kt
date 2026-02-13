@@ -12,7 +12,7 @@ class ReceiptParser {
             .replace("：", ":")
         val lines = normalized.lines().map { it.trim() }.filter { it.isNotEmpty() }
 
-        val amount = extractAmount(normalized)
+        val amount = extractAmount(normalized, lines)
         val time = extractTime(normalized)
         val merchant = extractByLabels(
             lines,
@@ -25,7 +25,7 @@ class ReceiptParser {
             lines,
             listOf("支付方式", "付款方式", "银行卡", "信用卡", "支付工具", "支付渠道", "付款账户")
         )
-        val cardTail = extractCardTail(normalized)
+        val cardTail = extractCardTail(normalized) ?: extractCardTail(payMethod ?: "")
         val platform = extractPlatform(normalized)
         val status = extractStatus(normalized)
         val orderId = extractByLabels(
@@ -53,9 +53,9 @@ class ReceiptParser {
         )
     }
 
-    private fun extractAmount(text: String): MoneyAmount? {
+    private fun extractAmount(text: String, lines: List<String>): MoneyAmount? {
         val keywordRegex = Pattern.compile(
-            "(实付|付款金额|合计|支付金额|总计|应付|实付款|消费金额|支付合计|Paid|Total|Amount)[^0-9]{0,6}([0-9]+(?:\\.[0-9]{1,2})?)",
+            "(实付|付款金额|合计|支付金额|总计|应付|实付款|消费金额|支付合计|Paid|Total|Amount)[^0-9\\-]{0,6}(-?[0-9]+(?:\\.[0-9]{1,2})?)",
             Pattern.CASE_INSENSITIVE
         )
         val keywordMatch = keywordRegex.matcher(text)
@@ -69,7 +69,14 @@ class ReceiptParser {
             return toMoney(currencyMatch.group(2), currencyMatch.group(1))
         }
 
-        val fallbackRegex = Pattern.compile("([0-9]+(?:\\.[0-9]{1,2})?)")
+        val amountLine = lines.firstOrNull { line ->
+            line.matches(Regex("^-?[0-9]+(\\.[0-9]{1,2})?$"))
+        }
+        if (amountLine != null) {
+            return toMoney(amountLine, text)
+        }
+
+        val fallbackRegex = Pattern.compile("(-?[0-9]+(?:\\.[0-9]{1,2})?)")
         val matches = mutableListOf<String>()
         val matcher = fallbackRegex.matcher(text)
         while (matcher.find()) {
@@ -119,18 +126,28 @@ class ReceiptParser {
     }
 
     private fun extractMerchantFallback(lines: List<String>): String? {
-        val skipKeywords = listOf("支付", "金额", "订单", "时间", "收款方", "商家", "对方", "交易", "成功")
-        return lines.firstOrNull { line ->
-            line.length in 2..20 &&
+        val skipKeywords = listOf(
+            "支付", "金额", "订单", "时间", "收款方", "商家", "对方",
+            "交易", "成功", "账单", "详情", "分类", "标签"
+        )
+        val preferredMarkers = listOf("店", "商户", "有限公司", "有限责任公司", ":")
+        val candidates = lines.filter { line ->
+            line.length in 2..24 &&
                 skipKeywords.none { line.contains(it) } &&
                 !line.any { it.isDigit() }
         }
+        return candidates.firstOrNull { line -> preferredMarkers.any { line.contains(it) } }
+            ?: candidates.firstOrNull()
     }
 
     private fun extractCardTail(text: String): String? {
         val regex = Pattern.compile("尾号\\s?([0-9]{3,4})")
         val matcher = regex.matcher(text)
-        return if (matcher.find()) matcher.group(1) else null
+        if (matcher.find()) return matcher.group(1)
+
+        val bracketRegex = Pattern.compile("\\(([0-9]{3,4})\\)")
+        val bracketMatcher = bracketRegex.matcher(text)
+        return if (bracketMatcher.find()) bracketMatcher.group(1) else null
     }
 
     private fun extractPlatform(text: String): String? {
