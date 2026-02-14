@@ -1,6 +1,7 @@
 package com.moneyapp.parser
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertNotNull
 import org.junit.Test
 
@@ -33,9 +34,9 @@ class ReceiptParserTest {
         """.trimIndent()
 
         val result = parser.parse(text)
-        assertEquals(300, result.amountMinor)
+        assertEquals(-300L, result.amountMinor)
         assertEquals("CNY", result.currency)
-        assertEquals("商户_王亚超", result.merchant)
+        assertEquals("王亚超", result.merchant)
         assertEquals("3303", result.cardTail)
         assertEquals("Success", result.status)
         assertNotNull(result.payTime)
@@ -62,11 +63,66 @@ class ReceiptParserTest {
         """.trimIndent()
 
         val result = parser.parse(text)
-        assertEquals(900, result.amountMinor)
+        assertEquals(-900L, result.amountMinor)
         assertEquals("CNY", result.currency)
-        assertEquals("上海市嘉定区菊园新区颖福面包坊(个体工商户)", result.merchant)
+        assertEquals("福福饼店·金牌酥皮菠萝包 (嘉定宝龙店)", result.merchant)
         assertEquals("3303", result.cardTail)
         assertEquals("Success", result.status)
         assertNotNull(result.payTime)
+        assertEquals("餐饮", result.categoryGuess)
+    }
+
+    @Test
+    fun parseIncomeAmountWithPlusSign() {
+        val text = """
+            收款成功
+            金额
+            +3O00
+            收款方
+            ****大*店
+            商户全称
+            上海某某大卖场有限公司
+        """.trimIndent()
+
+        val result = parser.parse(text)
+        assertEquals(300000L, result.amountMinor)
+        assertTrue(result.merchant.orEmpty().contains("上海").not())
+        assertTrue(result.amountConfidence >= 70)
+    }
+
+    @Test
+    fun normalizeMajorMerchantAliases() {
+        val text = """
+            账单详情
+            美团收银909700209213949975
+            -29.90
+            交易成功
+        """.trimIndent()
+        val result = parser.parse(text)
+        assertEquals("美团", result.merchant)
+    }
+
+    @Test
+    fun normalizeCoffeeBrandAlias() {
+        val text = """
+            支付成功
+            Luckin Coffee 瑞幸咖啡(软件园店)
+            -18.00
+        """.trimIndent()
+        val result = parser.parse(text)
+        assertEquals("瑞幸咖啡", result.merchant)
+    }
+
+    @Test
+    fun shouldNotUseOrderDetailAsMerchant() {
+        val text = """
+            订单详情
+            -19.90
+            交易成功
+            收款方
+            美团收银
+        """.trimIndent()
+        val result = parser.parse(text)
+        assertEquals("美团", result.merchant)
     }
 }
